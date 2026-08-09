@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 if not exist data mkdir data
 if not exist output mkdir output
@@ -7,10 +7,10 @@ if not exist output mkdir output
 rem Single-instance check: do not start a second monitor
 if exist "data\collector.pid" (
     set /p OLD_PID=<data\collector.pid
-    tasklist /FI "PID eq %OLD_PID%" 2>nul | findstr /i "collector" >nul
+    tasklist /FI "PID eq !OLD_PID!" 2>nul | findstr /i "collector" >nul
     if not errorlevel 1 (
         echo.
-        echo [Info] Monitor is already running (PID %OLD_PID%). Nothing to do.
+        echo [Info] Monitor is already running. PID=!OLD_PID! Nothing to do.
         echo To restart it, stop the current monitor first, then run this script again.
         echo.
         pause

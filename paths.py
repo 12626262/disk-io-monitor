@@ -21,3 +21,29 @@ REPORT_PATH = os.path.join(OUTPUT_DIR, "dashboard.html")
 PID_COLLECTOR = os.path.join(DATA_DIR, "collector.pid")
 PID_SERVE = os.path.join(DATA_DIR, "serve.pid")
 LOG_COLLECTOR = os.path.join(DATA_DIR, "collector.log")
+
+
+_MUTEX_KERNEL32 = None
+_MUTEX_HANDLES = {}
+
+
+def acquire_mutex(name):
+    # Create a Windows named mutex.
+    # Returns:
+    #   True  -- this process created it (safe to continue)
+    #   False -- another instance already holds it
+    #   None  -- mutex unavailable (caller should fall back)
+    global _MUTEX_KERNEL32
+    try:
+        import ctypes
+        if _MUTEX_KERNEL32 is None:
+            _MUTEX_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            _MUTEX_KERNEL32.CreateMutexW.restype = ctypes.c_void_p
+            _MUTEX_KERNEL32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        handle = _MUTEX_KERNEL32.CreateMutexW(None, False, name)
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        _MUTEX_HANDLES[name] = handle
+        return True
+    except Exception:
+        return None

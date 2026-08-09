@@ -19,7 +19,7 @@ from datetime import datetime
 
 import psutil
 
-from paths import BASE_DIR, DATA_DIR, DB_PATH, PID_COLLECTOR as PID_FILE, LOG_COLLECTOR as LOG_FILE
+from paths import BASE_DIR, DATA_DIR, DB_PATH, PID_COLLECTOR as PID_FILE, LOG_COLLECTOR as LOG_FILE, acquire_mutex
 
 SAMPLE_INTERVAL = 5      # 默认采样间隔（秒）
 FLUSH_INTERVAL = 60      # 默认落库间隔（秒）
@@ -146,21 +146,12 @@ def acquire_pid():
         f.write(str(os.getpid()))
 
 
-_MUTEX_HANDLE = None
-
-
 def _is_already_running():
-    """单实例检查：优先用 Windows 命名互斥锁，失败时退回 PID 文件检查。"""
-    global _MUTEX_HANDLE
+    # Single-instance check: named mutex first, PID file as fallback.
     if os.name == "nt":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            _MUTEX_HANDLE = kernel32.CreateMutexW(None, False, "Local\\DiskIOMonitorCollector")
-            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                return True
-        except Exception:
-            pass
+        got = acquire_mutex("Local\\DiskIOMonitorCollector")
+        if got is not None:
+            return not got
     if os.path.exists(PID_FILE):
         try:
             with open(PID_FILE, encoding="utf-8") as f:
@@ -170,7 +161,6 @@ def _is_already_running():
         except (ValueError, OSError):
             pass
     return False
-
 
 def _pid_is_monitor(pid):
     """确认该 PID 确实属于本程序（避免 PID 被系统复用后误判）。"""

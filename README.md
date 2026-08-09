@@ -64,12 +64,4 @@ disk-io-monitor/
 - 两者口径不同、数值有差异，属正常现象
 - 数据保存为 SQLite（`data\disk_io.db`），每 60 秒增量写入，退出时自动保存剩余数据
 
-## 部署到 GitHub
-
-```bat
-git init -b main
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/12626262/disk-io-monitor.git
-git push -u origin main
-```
+## 在这里强烈感谢GPT老师对UI的编写以及对监控行为的指导
