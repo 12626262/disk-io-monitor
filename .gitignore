@@ -1,0 +1,10 @@
+# 运行时生成的数据（含个人磁盘读写记录，不应上传）
+data/
+output/
+
+# 构建产物
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
