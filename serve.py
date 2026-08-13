@@ -134,7 +134,7 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def do_GET(self):
+    def _handle_api(self):
         if self.path == "/api/live/data":
             try:
                 with open(os.path.join(DATA_DIR, "live.json"), "r", encoding="utf-8") as f:
@@ -142,13 +142,10 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 data = {"running": False, "rows": []}
             send_json(self, data)
-            return
+            return True
         if self.path == "/api/live/status":
             send_json(self, {"running": filewatch_running()})
-            return
-        super().do_GET()
-
-    def do_POST(self):
+            return True
         if self.path == "/api/flush":
             try:
                 os.makedirs(DATA_DIR, exist_ok=True)
@@ -157,13 +154,23 @@ class Handler(SimpleHTTPRequestHandler):
                 send_json(self, {"ok": True})
             except Exception as exc:
                 send_json(self, {"ok": False, "error": str(exc)}, 500)
-            return
+            return True
         if self.path == "/api/live/start" or self.path.startswith("/api/live/start?"):
             admin = "admin=1" in self.path
             send_json(self, start_filewatch(admin))
-            return
+            return True
         if self.path == "/api/live/stop":
             send_json(self, stop_filewatch())
+            return True
+        return False
+
+    def do_GET(self):
+        if self._handle_api():
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        if self._handle_api():
             return
         send_json(self, {"error": "not found"}, 404)
 
