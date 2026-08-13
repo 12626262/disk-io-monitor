@@ -25,6 +25,15 @@ from paths import DATA_DIR
 PID_FILE = os.path.join(DATA_DIR, "filewatch.pid")
 LIVE_JSON = os.path.join(DATA_DIR, "live.json")
 STOP_FILE = os.path.join(DATA_DIR, "live.stop")
+LOG_FILE = os.path.join(DATA_DIR, "filewatch.log")
+
+
+def dlog(msg):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except Exception:
+        pass
 
 
 def is_admin():
@@ -90,6 +99,7 @@ def to_str(value):
 filekey_path = {}
 stats_lock = threading.Lock()
 stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [读, 写]
+counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0}
 
 
 def on_event(event_tup):
@@ -97,6 +107,9 @@ def on_event(event_tup):
     try:
         event_id, ev = event_tup
         pid = ev["EventHeader"]["ProcessId"]
+        with stats_lock:
+            counters["total"] += 1
+            counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
         if event_id in (12, 13):  # FileIo/Name, FileIo/FileCreate：记录 FileKey -> 路径
             fkey = to_int(ev.get("FileKey"))
             fname = normalize_path(to_str(ev.get("FileName")))
@@ -105,6 +118,7 @@ def on_event(event_tup):
                     if len(filekey_path) > 60000:
                         filekey_path.clear()
                     filekey_path[fkey] = fname
+                    counters["name_ok"] += 1
         elif event_id in (4, 5):  # FileIo/Read, FileIo/Write
             fkey = to_int(ev.get("FileKey"))
             size = to_int(ev.get("SizeOfIo"))
@@ -117,8 +131,10 @@ def on_event(event_tup):
             key = (pid, path)
             with stats_lock:
                 stats[key][0 if event_id == 4 else 1] += size
+                counters["io_ok"] += 1
     except Exception:
-        pass
+        with stats_lock:
+            counters["parse_err"] += 1
 
 
 proc_name_cache = {}
@@ -141,6 +157,7 @@ def process_name(pid):
 
 
 def writer_loop():
+    last_dbg = 0
     while True:
         time.sleep(1)
         try:
@@ -159,6 +176,21 @@ def writer_loop():
                     "total": r + w,
                 })
             payload = {"running": True, "ts": int(time.time()), "rows": rows}
+            now = time.time()
+            if now - last_dbg >= 5:
+                with stats_lock:
+                    dbg = {
+                        "total": counters["total"],
+                        "by_opcode": dict(counters["by_opcode"]),
+                        "name_ok": counters["name_ok"],
+                        "io_ok": counters["io_ok"],
+                        "parse_err": counters["parse_err"],
+                        "filekey_map": len(filekey_path),
+                        "stats_entries": len(stats),
+                    }
+                payload["debug"] = dbg
+                dlog("debug %s" % dbg)
+                last_dbg = now
             tmp = LIVE_JSON + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
@@ -207,12 +239,16 @@ def main():
         event_callback=on_event,
     )
 
+    dlog("filewatch starting, admin ok, pid=%d" % os.getpid())
+
     writer = threading.Thread(target=writer_loop, daemon=True)
     writer.start()
 
     try:
         tracer.start()
+        dlog("ETW session started")
     except Exception as exc:
+        dlog("ETW start failed: %s" % exc)
         payload = {"running": False,
                    "error": "启动 ETW 跟踪失败：%s（可能需要管理员权限）" % exc}
         with open(LIVE_JSON, "w", encoding="utf-8") as f:

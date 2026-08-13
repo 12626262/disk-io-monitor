@@ -359,6 +359,21 @@ JS_TEXT = '''
 var liveTimer = null;
 var liveOn = false;
 
+if (location.protocol === 'file:') {
+    var _b = document.createElement('div');
+    _b.style.cssText = 'background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;margin-bottom:12px;';
+    _b.textContent = '当前是用“打开文件”方式查看页面，按钮无法联网工作。请用浏览器访问 http://127.0.0.1:8787/dashboard.html';
+    var _w = document.querySelector('.wrap');
+    if (_w) _w.insertBefore(_b, _w.firstChild);
+}
+
+function _j(resp) {
+    return resp.text().then(function (t) {
+        try { return JSON.parse(t); }
+        catch (e) { return {error: '服务返回了无法解析的响应(HTTP ' + resp.status + ')：' + t.slice(0, 200)}; }
+    });
+}
+
 function fmtBytes(n) {
     if (n < 1024) return n + ' B';
     var u = ['KB', 'MB', 'GB', 'TB'];
@@ -411,7 +426,7 @@ function liveRender(data) {
 
 function liveStart(admin) {
     fetch('/api/live/start' + (admin ? '?admin=1' : '')).then(function (r) {
-        return r.json();
+        return _j(r);
     }).then(function (j) {
         if (j.error) {
             setLiveStatus(j.error, '#dc2626');
@@ -428,7 +443,7 @@ function liveStart(admin) {
         if (meta) meta.remove();
         setLiveStatus('正在实时监控…再次点击停止', '#059669');
         liveTimer = setInterval(function () {
-            fetch('/api/live/data').then(function (r) { return r.json(); }).then(function (d) {
+            fetch('/api/live/data').then(function (r) { return _j(r); }).then(function (d) {
                 if (d.error && d.running === false) {
                     clearInterval(liveTimer);
                     liveTimer = null;
@@ -440,8 +455,8 @@ function liveStart(admin) {
                 liveRender(d);
             }).catch(function () {});
         }, 1000);
-    }).catch(function () {
-        setLiveStatus('请求失败，请确认监控服务已启动', '#dc2626');
+    }).catch(function (e) {
+        setLiveStatus('请求失败：' + (e && e.message ? e.message : e) + '。请确认监控服务已启动，且用 http://127.0.0.1:8787 打开页面', '#dc2626');
     });
 }
 
@@ -464,12 +479,17 @@ function liveToggle() {
 }
 
 function flushNow() {
-    fetch('/api/flush', {method: 'POST'}).then(function (r) { return r.json(); }).then(function (j) {
+    fetch('/api/flush', {method: 'POST'}).then(function (r) { return _j(r); }).then(function (j) {
         var el = document.getElementById('flushMsg');
         el.textContent = j.ok ? '已请求立即记录，正在刷新…' : '请求失败：' + (j.error || '');
         el.style.display = 'inline';
         setTimeout(function () { location.reload(); }, 1500);
-    }).catch(function () {});
+    }).catch(function (e) {
+        var el = document.getElementById('flushMsg');
+        el.textContent = '请求失败：' + (e && e.message ? e.message : e);
+        el.style.display = 'inline';
+        el.style.color = '#dc2626';
+    });
 }
 '''
 
