@@ -307,6 +307,8 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append("<header><h1>磁盘读写监控</h1>")
     page.append('<div class="sub">数据最后更新：%s　｜　数据文件：data/disk_io.db　｜　页面每 60 秒自动刷新</div></header>'
                 % html.escape(last_update or "—"))
+    page.append('<div class="quickbar"><button onclick="flushNow()">立即记录并刷新</button>'
+                '<span id="flushMsg"></span></div>')
     page.append('<section class="cards">' + cards_html + "</section>")
 
     if has_data:
@@ -329,14 +331,147 @@ def build_html(proc, disk, last_update, days_n=14):
     else:
         page.append('<section class="panel">' + empty_html + "</section>")
 
+    page.append('<section class="panel" id="livepanel">')
+    page.append('<h2>实时文件读写监控（按进程 × 文件）</h2>')
+    page.append('<div class="livetoolbar">')
+    page.append('<button id="liveBtn" onclick="liveToggle()">开始实时监控</button>')
+    page.append('<button id="liveAdminBtn" style="display:none" onclick="liveStartAdmin()">以管理员身份启动</button>')
+    page.append('<span id="liveStatus" class="livestatus">点击开始后实时显示各进程对每个文件的读写量，再次点击停止；首次使用需管理员授权。</span>')
+    page.append('</div>')
+    page.append('<div id="liveWrap" style="display:none">')
+    page.append('<table><thead><tr><th>进程</th><th>文件</th><th>读取</th><th>写入</th><th>合计</th></tr></thead>'
+                '<tbody id="liveRows"></tbody></table>')
+    page.append('</div>')
+    page.append('</section>')
     page.append("<footer>")
     page.append("说明：进程读写量来自 Windows 进程 I/O 计数器（逻辑文件 I/O，包含缓存读写），"
                 "用于判断“哪个应用在读写”；磁盘总量来自磁盘控制器计数器（物理 I/O）。"
                 "两者口径不同，数值会有差异，属正常现象。")
     page.append("<br>报告由 report.py 每 60 秒自动重新生成；原始数据保存在 data/disk_io.db。")
+    page.append("<script>")
+    page.append(JS_TEXT)
+    page.append("</script>")
     page.append("</footer></div></body></html>")
     return "".join(page)
 
+
+JS_TEXT = '''
+var liveTimer = null;
+var liveOn = false;
+
+function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    var u = ['KB', 'MB', 'GB', 'TB'];
+    var i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return n.toFixed(1) + ' ' + u[i];
+}
+
+function setLiveStatus(txt, color) {
+    var el = document.getElementById('liveStatus');
+    el.textContent = txt;
+    el.style.color = color || '#64748b';
+}
+
+function liveRender(data) {
+    var tb = document.getElementById('liveRows');
+    tb.innerHTML = '';
+    if (!data || !data.rows || !data.rows.length) {
+        var tr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.colSpan = 5;
+        td.textContent = '暂无数据（正在收集文件读写事件…）';
+        td.style.textAlign = 'center';
+        td.style.color = '#94a3b8';
+        tr.appendChild(td);
+        tb.appendChild(tr);
+        return;
+    }
+    data.rows.forEach(function (row) {
+        var tr = document.createElement('tr');
+        var tdP = document.createElement('td');
+        tdP.textContent = row.process + ' (PID ' + row.pid + ')';
+        var tdF = document.createElement('td');
+        tdF.textContent = row.file;
+        tdF.className = 'livefile';
+        var tdR = document.createElement('td');
+        tdR.textContent = fmtBytes(row.read);
+        var tdW = document.createElement('td');
+        tdW.textContent = fmtBytes(row.write);
+        var tdT = document.createElement('td');
+        tdT.textContent = fmtBytes(row.total);
+        tr.appendChild(tdP);
+        tr.appendChild(tdF);
+        tr.appendChild(tdR);
+        tr.appendChild(tdW);
+        tr.appendChild(tdT);
+        tb.appendChild(tr);
+    });
+}
+
+function liveStart(admin) {
+    fetch('/api/live/start' + (admin ? '?admin=1' : '')).then(function (r) {
+        return r.json();
+    }).then(function (j) {
+        if (j.error) {
+            setLiveStatus(j.error, '#dc2626');
+            if (j.needAdmin) {
+                document.getElementById('liveAdminBtn').style.display = 'inline-block';
+            }
+            return;
+        }
+        document.getElementById('liveAdminBtn').style.display = 'none';
+        liveOn = true;
+        document.getElementById('liveBtn').textContent = '停止实时监控';
+        document.getElementById('liveWrap').style.display = 'block';
+        var meta = document.querySelector('meta[http-equiv="refresh"]');
+        if (meta) meta.remove();
+        setLiveStatus('正在实时监控…再次点击停止', '#059669');
+        liveTimer = setInterval(function () {
+            fetch('/api/live/data').then(function (r) { return r.json(); }).then(function (d) {
+                if (d.error && d.running === false) {
+                    clearInterval(liveTimer);
+                    liveTimer = null;
+                    liveOn = false;
+                    document.getElementById('liveBtn').textContent = '开始实时监控';
+                    setLiveStatus(d.error, '#dc2626');
+                    return;
+                }
+                liveRender(d);
+            }).catch(function () {});
+        }, 1000);
+    }).catch(function () {
+        setLiveStatus('请求失败，请确认监控服务已启动', '#dc2626');
+    });
+}
+
+function liveStartAdmin() {
+    liveStart(true);
+}
+
+function liveToggle() {
+    if (liveOn) {
+        clearInterval(liveTimer);
+        liveTimer = null;
+        liveOn = false;
+        document.getElementById('liveBtn').textContent = '开始实时监控';
+        document.getElementById('liveWrap').style.display = 'none';
+        setLiveStatus('已停止实时监控', '#64748b');
+        fetch('/api/live/stop').catch(function () {});
+    } else {
+        liveStart(false);
+    }
+}
+
+function flushNow() {
+    fetch('/api/flush', {method: 'POST'}).then(function (r) { return r.json(); }).then(function (j) {
+        var el = document.getElementById('flushMsg');
+        el.textContent = j.ok ? '已请求立即记录，正在刷新…' : '请求失败：' + (j.error || '');
+        el.style.display = 'inline';
+        setTimeout(function () { location.reload(); }, 1500);
+    }).catch(function () {});
+}
+'''
 
 CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -365,6 +500,14 @@ td.app { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spac
 footer { color: #94a3b8; font-size: 12px; line-height: 1.8; margin-top: 8px; }
 .empty { color: #94a3b8; padding: 30px 0; text-align: center; }
 code { background: #f1f5f9; padding: 1px 6px; border-radius: 4px; }
+.livetoolbar { margin-bottom: 12px; }
+.livetoolbar button, .quickbar button { margin-right: 8px; padding: 6px 14px;
+  border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+.livetoolbar button:hover, .quickbar button:hover { background: #f1f5f9; }
+.livestatus { font-size: 12px; color: #64748b; margin-left: 8px; }
+.livefile { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quickbar { margin: 10px 0; }
+#flushMsg { font-size: 12px; color: #059669; margin-left: 8px; display: none; }
 """
 
 

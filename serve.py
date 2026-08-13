@@ -8,11 +8,15 @@ http://127.0.0.1:8787/dashboard.html
 """
 
 import argparse
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+import psutil
 
 import report
 from paths import BASE_DIR, OUTPUT_DIR, DATA_DIR, PID_SERVE as PID_FILE, REPORT_PATH, acquire_mutex
@@ -20,6 +24,103 @@ from paths import BASE_DIR, OUTPUT_DIR, DATA_DIR, PID_SERVE as PID_FILE, REPORT_
 
 def regen_report():
     report.generate_report()
+
+
+def send_json(handler, obj, status=200):
+    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+FILEWATCH_EXE = os.path.join(BASE_DIR, "filewatch.exe")
+FILEWATCH_PY = os.path.join(BASE_DIR, "filewatch.py")
+FILEWATCH_PID = os.path.join(DATA_DIR, "filewatch.pid")
+
+
+def filewatch_running():
+    try:
+        if os.path.exists(FILEWATCH_PID):
+            with open(FILEWATCH_PID, encoding="utf-8") as f:
+                pid = int(f.read().strip())
+            if psutil.pid_exists(pid):
+                try:
+                    name = psutil.Process(pid).name().lower()
+                except Exception:
+                    name = ""
+                if name in ("filewatch.exe", "python.exe", "pythonw.exe"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def start_filewatch(admin=False):
+    if filewatch_running():
+        return {"ok": True, "running": True}
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        stop_file = os.path.join(DATA_DIR, "live.stop")
+        if os.path.exists(stop_file):
+            os.remove(stop_file)
+    except OSError:
+        pass
+
+    if os.path.exists(FILEWATCH_EXE):
+        cmd = FILEWATCH_EXE
+        args = ""
+    else:
+        cmd = sys.executable
+        args = '"%s"' % FILEWATCH_PY
+
+    if admin:
+        import ctypes
+        res = ctypes.windll.shell32.ShellExecuteW(None, "runas", cmd, args, BASE_DIR, 1)
+        if res <= 32:
+            return {"error": "启动管理员模式失败（错误码 %d），可能已被取消。" % res}
+        return {"ok": True, "pending": True}
+
+    try:
+        creationflags = 0x08000000  # CREATE_NO_WINDOW
+        if args:
+            subprocess.Popen([cmd, FILEWATCH_PY], cwd=BASE_DIR, creationflags=creationflags)
+        else:
+            subprocess.Popen([cmd], cwd=BASE_DIR, creationflags=creationflags)
+    except Exception as exc:
+        return {"error": "启动失败：%s" % exc}
+
+    time.sleep(2.5)
+    try:
+        with open(os.path.join(DATA_DIR, "live.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if data.get("error"):
+        return {"error": data["error"], "needAdmin": True}
+    return {"ok": True, "running": True}
+
+
+def stop_filewatch():
+    try:
+        with open(FILEWATCH_PID, encoding="utf-8") as f:
+            pid = int(f.read().strip())
+    except Exception:
+        pid = None
+    try:
+        with open(os.path.join(DATA_DIR, "live.stop"), "w", encoding="utf-8") as f:
+            f.write("1")
+    except OSError:
+        pass
+    if pid:
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -32,6 +133,39 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def do_GET(self):
+        if self.path == "/api/live/data":
+            try:
+                with open(os.path.join(DATA_DIR, "live.json"), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {"running": False, "rows": []}
+            send_json(self, data)
+            return
+        if self.path == "/api/live/status":
+            send_json(self, {"running": filewatch_running()})
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        if self.path == "/api/flush":
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(os.path.join(DATA_DIR, "flush.request"), "w", encoding="utf-8") as f:
+                    f.write("1")
+                send_json(self, {"ok": True})
+            except Exception as exc:
+                send_json(self, {"ok": False, "error": str(exc)}, 500)
+            return
+        if self.path == "/api/live/start" or self.path.startswith("/api/live/start?"):
+            admin = "admin=1" in self.path
+            send_json(self, start_filewatch(admin))
+            return
+        if self.path == "/api/live/stop":
+            send_json(self, stop_filewatch())
+            return
+        send_json(self, {"error": "not found"}, 404)
 
 
 def acquire_pid():

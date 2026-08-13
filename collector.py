@@ -226,6 +226,16 @@ def run(duration=None, interval=SAMPLE_INTERVAL, flush_interval=FLUSH_INTERVAL):
 
             prev_proc, prev_disk = cur_proc, cur_disk
 
+            flush_req = os.path.join(DATA_DIR, "flush.request")
+            if os.path.exists(flush_req):
+                try:
+                    os.remove(flush_req)
+                except OSError:
+                    pass
+                n_proc, n_disk = len(acc_proc), len(acc_disk)
+                flush(acc_proc, acc_disk)
+                log("收到立即记录请求，已写入数据库（%d 个进程 / %d 个磁盘）" % (n_proc, n_disk))
+
             if now - last_flush >= flush_interval:
                 n_proc, n_disk = len(acc_proc), len(acc_disk)
                 flush(acc_proc, acc_disk)

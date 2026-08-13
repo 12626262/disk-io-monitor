@@ -6,6 +6,7 @@ if not exist bin mkdir bin
 set DLLS=--add-binary "G:\Conda\Anaconda\envs\disk-io-monitor\Library\bin\sqlite3.dll;." --add-binary "G:\Conda\Anaconda\envs\disk-io-monitor\Library\bin\libcrypto-3-x64.dll;." --add-binary "G:\Conda\Anaconda\envs\disk-io-monitor\Library\bin\libssl-3-x64.dll;."
 "%PY%" -m PyInstaller --onefile --noconsole --name collector --distpath bin --workpath build --specpath build %DLLS% collector.py
 "%PY%" -m PyInstaller --onefile --noconsole --name serve --distpath bin --workpath build --specpath build %DLLS% serve.py
+"%PY%" -m PyInstaller --onefile --noconsole --name filewatch --distpath bin --workpath build --specpath build %DLLS% filewatch.py
 "%PY%" -m PyInstaller --onefile --console --name report --distpath bin --workpath build --specpath build %DLLS% report.py
 echo.
 echo Build finished. Output: bin\
