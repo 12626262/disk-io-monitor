@@ -132,7 +132,7 @@ def on_event(event_tup):
         elif event_id in (15, 16):  # Read / Write events
             fkey = to_int(ev.get("FileKey"))
             fobj = to_int(ev.get("FileObject"))
-            size = to_int(ev.get("SizeOfIo"))
+            size = to_int(ev.get("IOSize"))
             if size is None:
                 size = to_int(ev.get("ByteCount"))
             if size is None:
