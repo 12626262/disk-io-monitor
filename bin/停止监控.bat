@@ -1,12 +1,13 @@
 @echo off
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Requesting administrator privileges to stop the monitor...
+    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
 cd /d "%~dp0"
-if exist "data\collector.pid" (
-    for /f %%i in (data\collector.pid) do taskkill /PID %%i /F >nul 2>&1
-    del /q "data\collector.pid" >nul 2>&1
-)
-if exist "data\serve.pid" (
-    for /f %%i in (data\serve.pid) do taskkill /PID %%i /F >nul 2>&1
-    del /q "data\serve.pid" >nul 2>&1
-)
+taskkill /IM collector.exe /T /F
+taskkill /IM serve.exe /T /F
+taskkill /IM filewatch.exe /T /F
 echo Monitor stopped. Data is kept in data\disk_io.db
 pause
