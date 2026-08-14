@@ -45,6 +45,45 @@ def is_admin():
 
 
 _device_map = {}
+_drive_letters_cache = None
+
+
+def physical_drive_letters():
+    """Map 'PhysicalDriveN' -> 'PhysicalDriveN (C: D:)' via IOCTL_STORAGE_GET_DEVICE_NUMBER.
+    Returns None if the mapping is unavailable (then caller shows raw names)."""
+    global _drive_letters_cache
+    if _drive_letters_cache is not None:
+        return _drive_letters_cache
+    mapping = {}
+    try:
+        import struct
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_ALL = 0x7
+        OPEN_EXISTING = 3
+        IOCTL_STORAGE_GET_DEVICE_NUMBER = 0x2D0000 | (0x30 << 2)  # CTL_CODE(0x2D, 0x30, 0, 0)
+        by_disk = {}
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            h = ctypes.windll.kernel32.CreateFileW("\\\\.\\%s:" % letter, 0, FILE_SHARE_ALL,
+                                                   None, OPEN_EXISTING, 0, None)
+            if h in (None, -1, 0xFFFFFFFFFFFFFFFF):
+                continue
+            try:
+                buf = ctypes.create_string_buffer(24)
+                ret = ctypes.c_ulong(0)
+                ok = ctypes.windll.kernel32.DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                                                            None, 0, buf, 24, ctypes.byref(ret), None)
+                if ok:
+                    dev_type, dev_number, part_number = struct.unpack("III", buf.raw[:12])
+                    by_disk.setdefault(dev_number, []).append(letter + ":")
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+        for num in sorted(by_disk):
+            letters = " ".join(by_disk[num])
+            mapping["PhysicalDrive%d" % num] = "PhysicalDrive%d (%s)" % (num, letters)
+    except Exception:
+        return None
+    _drive_letters_cache = mapping if mapping else {}
+    return _drive_letters_cache
 
 
 def build_device_map():
@@ -101,14 +140,17 @@ filekey_path = {}
 fileobj_path = {}
 FILE_PROVIDER_GUID = "{EDD08927-9CC4-4E65-B970-C2560FB5C289}"
 DISK_PROVIDER_GUID = "{C7BDE69A-E1E0-4177-B6EF-283AD1525271}"
+DISK_CLASSIC_GUID = "{3D6FA8D4-FE05-11D0-9DDA-00C04FD7BA7C}"
 disk_stats = defaultdict(lambda: [0, 0])  # pid -> [read, write] (physical disk)
 disk_active_ts = {}  # pid -> last activity time
+proc_io_speed = {}  # pid -> [read_bps, write_bps, process name]
+disk_io_total_speed = []  # per-physical-disk totals: [{'name','read','write','total'}]
 stats_lock = threading.Lock()
 stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [read, write]
 active_ts = {}  # (pid, path) -> last activity time
 counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0,
             "io_missing_size": 0, "io_missing_path": 0,
-            "disk_io_ok": 0, "disk_missing_size": 0}
+            "disk_io_ok": 0, "disk_missing_size": 0, "by_provider": {}}
 
 
 def on_event(event_tup):
@@ -116,18 +158,24 @@ def on_event(event_tup):
     try:
         event_id, ev = event_tup
         prov = str(ev.get("EventHeader", {}).get("ProviderId", "")).upper()
+        opcode = ev.get("EventHeader", {}).get("EventDescriptor", {}).get("Opcode", 0)
+        if event_id == 0 and opcode:
+            event_id = opcode
         pid = ev["EventHeader"]["ProcessId"]
         ensure_pid_name(pid)
         with stats_lock:
             counters["total"] += 1
+            counters["by_provider"][prov] = counters["by_provider"].get(prov, 0) + 1
             counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
-        if counters["by_opcode"].get(str(event_id), 0) == 1 and event_id in (10, 11, 12, 15, 16):
-            dlog("first event id=%s provider=%s keys=%s FileKey=%s FileObject=%s SizeOfIo=%s ByteCount=%s FileName=%s"
-                 % (event_id, prov, sorted(ev.keys()), ev.get("FileKey"), ev.get("FileObject"),
-                    ev.get("SizeOfIo"), ev.get("ByteCount"), ev.get("FileName")))
-        if DISK_PROVIDER_GUID.upper() in prov:
+        if counters["by_opcode"].get(str(event_id), 0) == 1 and event_id in (0, 10, 11, 12, 15, 16):
+            dlog("first event id=%s opcode=%s provider=%s keys=%s FileKey=%s FileObject=%s SizeOfIo=%s ByteCount=%s TransferSize=%s FileName=%s"
+                 % (event_id, opcode, prov, sorted(ev.keys()), ev.get("FileKey"), ev.get("FileObject"),
+                    ev.get("SizeOfIo"), ev.get("ByteCount"), ev.get("TransferSize"), ev.get("FileName")))
+        if DISK_PROVIDER_GUID.upper() in prov or DISK_CLASSIC_GUID.upper() in prov:
             # physical disk I/O attributed to the issuing process (matches Task Manager)
-            size = to_int(ev.get("ByteCount"))
+            size = to_int(ev.get("TransferSize"))
+            if size is None:
+                size = to_int(ev.get("ByteCount"))
             if size is None:
                 size = to_int(ev.get("IoSize"))
             if size is None:
@@ -226,10 +274,62 @@ def process_name(pid):
 SPEED_THRESHOLD = 512000  # 500 KB/s
 
 
+def proc_io_loop():
+    """Per-process disk speed fallback: Windows process I/O counters (the same
+    counters Task Manager uses) plus physical disk totals (psutil)."""
+    import psutil
+    prev_proc = {}
+    prev_disk = {}
+    prev_ts = time.time()
+    while True:
+        time.sleep(1.0)
+        now = time.time()
+        dt = max(0.001, now - prev_ts)
+        snap_proc = {}
+        for p in psutil.process_iter(["pid", "name"]):
+            try:
+                io = p.io_counters()
+                snap_proc[p.info["pid"]] = (io.read_bytes, io.write_bytes, p.info["name"])
+            except Exception:
+                pass
+        speeds = {}
+        for pid, (rb, wb, name) in snap_proc.items():
+            if pid in prev_proc:
+                prb, pwb, _ = prev_proc[pid]
+                dr = max(0, rb - prb) / dt
+                dw = max(0, wb - pwb) / dt
+                if dr > 0 or dw > 0:
+                    speeds[pid] = [dr, dw, name]
+        disk_snap = {}
+        try:
+            for dname, d in psutil.disk_io_counters(perdisk=True).items():
+                disk_snap[dname] = (d.read_bytes, d.write_bytes)
+        except Exception:
+            pass
+        totals = []
+        dmap = physical_drive_letters()
+        for dname, (rb, wb) in disk_snap.items():
+            if dname in prev_disk:
+                prd = max(0, rb - prev_disk[dname][0]) / dt
+                pwd = max(0, wb - prev_disk[dname][1]) / dt
+                disp = dname
+                if dmap and dname in dmap:
+                    disp = dmap[dname]
+                totals.append({"name": disp, "read": int(prd), "write": int(pwd),
+                               "total": int(prd + pwd)})
+        totals.sort(key=lambda x: -(x["total"]))
+        with stats_lock:
+            proc_io_speed.clear()
+            proc_io_speed.update(speeds)
+            disk_io_total_speed[:] = totals
+        prev_proc = {pid: (rb, wb, name) for pid, (rb, wb, name) in snap_proc.items()}
+        prev_disk = dict(disk_snap)
+        prev_ts = now
+
+
 def writer_loop():
     last_dbg = 0
     prev_snapshot = {}
-    prev_disk_snapshot = {}
     prev_ts = time.time()
     while True:
         time.sleep(1)
@@ -265,26 +365,19 @@ def writer_loop():
             rows.sort(key=lambda x: -(x["total"]))
             rows = rows[:300]
             with stats_lock:
-                disk_snap = {k: list(v) for k, v in disk_stats.items()}
-                disk_active = dict(disk_active_ts)
+                pio = {pid: list(v) for pid, v in proc_io_speed.items()}
+                dtot = list(disk_io_total_speed)
             disk_rows = []
-            for dp, (dr, dw) in disk_snap.items():
-                if dp in prev_disk_snapshot:
-                    pdr, pdw = prev_disk_snapshot[dp]
-                    rs = max(0, dr - pdr) / elapsed
-                    ws = max(0, dw - pdw) / elapsed
-                else:
-                    rs = 0
-                    ws = 0
-                if rs <= 0 and ws <= 0 and now - disk_active.get(dp, 0) >= 3:
-                    continue
-                disk_rows.append({"pid": dp, "process": process_name(dp),
+            for dp, (rs, ws, pname) in pio.items():
+                if pname is None:
+                    pname = "(PID %d)" % dp
+                disk_rows.append({"pid": dp, "process": pname,
                                   "read": int(rs), "write": int(ws), "total": int(rs + ws)})
             disk_rows.sort(key=lambda x: -(x["total"]))
             disk_rows = disk_rows[:100]
-            payload = {"running": True, "ts": int(now), "rows": rows, "disk_rows": disk_rows}
+            payload = {"running": True, "ts": int(now), "rows": rows, "disk_rows": disk_rows,
+                       "disk_totals": dtot}
             prev_snapshot = snapshot
-            prev_disk_snapshot = disk_snap
             prev_ts = now
             if now - last_dbg >= 5:
                 with stats_lock:
@@ -298,6 +391,7 @@ def writer_loop():
                         "io_missing_path": counters["io_missing_path"],
                         "disk_io_ok": counters.get("disk_io_ok", 0),
                         "disk_missing_size": counters.get("disk_missing_size", 0),
+                        "by_provider": dict(counters.get("by_provider", {})),
                         "filekey_map": len(filekey_path),
                         "stats_entries": len(stats),
                     }
@@ -379,10 +473,7 @@ def main():
         providers=[file_provider, disk_provider],
         event_callback=on_event,
         ignore_exists_error=False,
-        providers_event_id_filters={
-            FILE_PROVIDER_GUID.upper(): [10, 12, 15, 16],
-            DISK_PROVIDER_GUID.upper(): [10, 11],
-        },
+        event_id_filters=[0, 10, 11, 12, 15, 16],
         ring_buf_size=32768,
     )
 
@@ -390,6 +481,8 @@ def main():
 
     writer = threading.Thread(target=writer_loop, daemon=True)
     writer.start()
+    pio_thread = threading.Thread(target=proc_io_loop, daemon=True)
+    pio_thread.start()
 
     try:
         tracer.start()

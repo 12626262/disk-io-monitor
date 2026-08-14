@@ -168,6 +168,12 @@ class EventProvider:
             else:
                 self.session_properties.get().contents.EnableFlags = et.DEFAULT_NT_KERNEL_LOGGER_FLAGS
 
+        if self.session_name.lower() == "diskiofiletrace":
+            self.session_properties.get().contents.LogFileMode |= et.EVENT_TRACE_SYSTEM_LOGGER_MODE
+            self.session_properties.get().contents.EnableFlags |= et.EVENT_TRACE_FLAG_DISK_IO
+            from etw.GUID import GUID
+            self.session_properties.get().contents.Wnode.Guid = GUID("{A1E6F2C4-3B8D-4E9A-8C1F-5D7B9A2E4C6F}")
+
         status = et.StartTraceW(ct.byref(self.session_handle), self.session_name, self.session_properties.get())
         if status != tdh.ERROR_SUCCESS:
             if self.kernel_trace is True and status == tdh.ERROR_ALREADY_EXISTS:
@@ -775,11 +781,11 @@ class EventConsumer:
             event_id = 0
             out = record
         else:
-            # event ID is in "Opcode" field in kernel events, Id is always 0
-            if self.kernel_trace:
+            # Classic kernel events have Id == 0 with the real event ID in Opcode;
+            # manifest events put the event ID in Id.
+            event_id = record.contents.EventHeader.EventDescriptor.Id
+            if event_id == 0:
                 event_id = record.contents.EventHeader.EventDescriptor.Opcode
-            else:
-                event_id = record.contents.EventHeader.EventDescriptor.Id
             if self.event_id_filters and event_id not in self.event_id_filters:
                 return
             # set task name to provider guid for the time being

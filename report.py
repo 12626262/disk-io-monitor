@@ -341,9 +341,10 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append('<div id="liveWrap" style="display:none">')
     page.append('<table><thead><tr><th>进程</th><th>文件</th><th>读取速度</th><th>写入速度</th><th>合计速度</th></tr></thead>'
                 '<tbody id="liveRows"></tbody></table>')
-    page.append('<h3 style="margin-top:14px">物理磁盘速度（按进程，与任务管理器口径一致）</h3>')
+    page.append('<h3 style="margin-top:14px">磁盘速度（按进程，与任务管理器一致）</h3>')
     page.append('<table><thead><tr><th>进程</th><th>读取速度</th><th>写入速度</th><th>合计速度</th></tr></thead>'
                 '<tbody id="diskRows"></tbody></table>')
+    page.append('<div id="diskTotals" style="margin-top:8px;color:#059669"></div>')
     page.append('</div>')
     page.append('</section>')
     page.append("<footer>")
@@ -456,6 +457,17 @@ function liveRender(data) {
             tr.appendChild(tdP); tr.appendChild(tdR); tr.appendChild(tdW); tr.appendChild(tdT);
             tbD.appendChild(tr);
         });
+    }
+    var dtEl = document.getElementById('diskTotals');
+    if (dtEl) {
+        if (data.disk_totals && data.disk_totals.length) {
+            var parts = data.disk_totals.map(function (d) {
+                return d.name + '：读 ' + fmtBytes(d.read) + '/s，写 ' + fmtBytes(d.write) + '/s';
+            });
+            dtEl.textContent = '物理磁盘总量（按磁盘）：' + parts.join('；');
+        } else {
+            dtEl.textContent = '';
+        }
     }
 }
 
