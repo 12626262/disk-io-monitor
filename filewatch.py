@@ -325,6 +325,8 @@ def main():
         providers=[provider],
         event_callback=on_event,
         ignore_exists_error=False,
+        event_id_filters=[10, 12, 15, 16],
+        ring_buf_size=32768,
     )
 
     dlog("filewatch starting, admin ok, pid=%d" % os.getpid())

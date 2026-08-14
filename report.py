@@ -299,7 +299,6 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append("<!DOCTYPE html>")
     page.append('<html lang="zh-CN"><head><meta charset="utf-8">')
     page.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    page.append('<meta http-equiv="refresh" content="60">')
     page.append("<title>磁盘读写监控</title>")
     page.append("<style>")
     page.append(CSS)
@@ -360,6 +359,11 @@ JS_TEXT = '''
 var liveTimer = null;
 var liveHbt = null;
 var liveOn = false;
+
+// refresh daily stats every 60s, but never while live monitoring is on
+setInterval(function () {
+    if (!liveOn) location.reload();
+}, 60000);
 
 if (location.protocol === 'file:') {
     var _b = document.createElement('div');
