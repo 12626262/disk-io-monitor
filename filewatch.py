@@ -211,7 +211,7 @@ def writer_loop():
         elapsed = max(0.001, now - prev_ts)
         try:
             with stats_lock:
-                snapshot = dict(stats)
+                snapshot = {k: list(v) for k, v in stats.items()}  # deep-copy values so deltas work
                 active = dict(active_ts)
             rows = []
             for (pid, path), (r, w) in snapshot.items():
