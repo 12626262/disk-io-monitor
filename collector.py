@@ -15,7 +15,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psutil
 
@@ -38,6 +38,28 @@ def log(msg):
     try:
         print(line, flush=True)
     except Exception:
+        pass
+
+
+def trim_log(keep_days=1):
+    """只保留最近 keep_days 天（含今天）的日志行，其余在启动时删除。"""
+    try:
+        if not os.path.exists(LOG_FILE):
+            return
+        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        kept = []
+        for line in lines:
+            if len(line) >= 11 and line.startswith("["):
+                kept.append(line[1:11] >= cutoff)
+            else:
+                kept.append(True)
+        new_lines = [line for line, k in zip(lines, kept) if k]
+        if len(new_lines) != len(lines):
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+    except OSError:
         pass
 
 
@@ -188,6 +210,7 @@ def run(duration=None, interval=SAMPLE_INTERVAL, flush_interval=FLUSH_INTERVAL):
     last_sample = time.time()
     last_flush = time.time()
     start = time.time()
+    trim_log()
     log("开始监控（采样 %gs / 落库 %ds%s）"
         % (interval, flush_interval, " / 自检模式" if duration else ""))
     try:

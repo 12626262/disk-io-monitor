@@ -19,7 +19,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 
 import report
-from paths import BASE_DIR, OUTPUT_DIR, DATA_DIR, PID_SERVE as PID_FILE, REPORT_PATH, acquire_mutex
+from paths import BASE_DIR, OUTPUT_DIR, DATA_DIR, DB_PATH, PID_SERVE as PID_FILE, REPORT_PATH, acquire_mutex
 
 
 def regen_report():
@@ -103,6 +103,34 @@ def start_filewatch(admin=False):
     return {"ok": True, "running": True}
 
 
+def clear_all_records():
+    """清空全部历史记录：数据库统计、运行日志、实时数据。"""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        with conn:
+            conn.execute("DELETE FROM process_io")
+            conn.execute("DELETE FROM disk_io")
+            conn.execute("DELETE FROM meta WHERE key='last_update'")
+        conn.close()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    for name in ("collector.log", "filewatch.log"):
+        try:
+            with open(os.path.join(DATA_DIR, name), "w", encoding="utf-8") as f:
+                pass
+        except OSError:
+            pass
+    try:
+        live = os.path.join(DATA_DIR, "live.json")
+        if os.path.exists(live):
+            os.remove(live)
+    except OSError:
+        pass
+    regen_report()
+    return {"ok": True}
+
+
 def stop_filewatch():
     try:
         with open(FILEWATCH_PID, encoding="utf-8") as f:
@@ -154,6 +182,9 @@ class Handler(SimpleHTTPRequestHandler):
                 send_json(self, {"ok": True})
             except Exception as exc:
                 send_json(self, {"ok": False, "error": str(exc)}, 500)
+            return True
+        if self.path == "/api/clear":
+            send_json(self, clear_all_records())
             return True
         if self.path == "/api/live/start" or self.path.startswith("/api/live/start?"):
             admin = "admin=1" in self.path

@@ -97,9 +97,11 @@ def to_str(value):
 
 
 filekey_path = {}
+fileobj_path = {}
 stats_lock = threading.Lock()
 stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [读, 写]
-counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0}
+counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0,
+            "io_missing_size": 0, "io_missing_path": 0}
 
 
 def on_event(event_tup):
@@ -110,23 +112,44 @@ def on_event(event_tup):
         with stats_lock:
             counters["total"] += 1
             counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
+        if counters["by_opcode"].get(str(event_id), 0) == 1 and event_id in (10, 12, 15, 16):
+            dlog("first event id=%s keys=%s values FileKey=%s FileObject=%s SizeOfIo=%s FileName=%s"
+                 % (event_id, sorted(ev.keys()), ev.get("FileKey"), ev.get("FileObject"),
+                    ev.get("SizeOfIo"), ev.get("FileName")))
         if event_id in (10, 12):  # NameCreate/Create carry the file path
             fkey = to_int(ev.get("FileKey"))
+            fobj = to_int(ev.get("FileObject"))
             fname = normalize_path(to_str(ev.get("FileName")))
-            if fkey is not None and fname:
+            if fname:
                 with stats_lock:
                     if len(filekey_path) > 60000:
                         filekey_path.clear()
-                    filekey_path[fkey] = fname
+                    if fkey is not None:
+                        filekey_path[fkey] = fname
+                    if fobj is not None:
+                        fileobj_path[fobj] = fname
                     counters["name_ok"] += 1
         elif event_id in (15, 16):  # Read / Write events
             fkey = to_int(ev.get("FileKey"))
+            fobj = to_int(ev.get("FileObject"))
             size = to_int(ev.get("SizeOfIo"))
-            if fkey is None or size is None:
+            if size is None:
+                size = to_int(ev.get("ByteCount"))
+            if size is None:
+                size = to_int(ev.get("IoSize"))
+            if size is None:
+                size = to_int(ev.get("RequestedByteCount"))
+            if size is None:
+                with stats_lock:
+                    counters["io_missing_size"] += 1
                 return
             with stats_lock:
                 path = filekey_path.get(fkey)
+                if path is None and fobj is not None:
+                    path = fileobj_path.get(fobj)
             if not path:
+                with stats_lock:
+                    counters["io_missing_path"] += 1
                 return
             key = (pid, path)
             with stats_lock:
@@ -185,6 +208,8 @@ def writer_loop():
                         "name_ok": counters["name_ok"],
                         "io_ok": counters["io_ok"],
                         "parse_err": counters["parse_err"],
+                        "io_missing_size": counters["io_missing_size"],
+                        "io_missing_path": counters["io_missing_path"],
                         "filekey_map": len(filekey_path),
                         "stats_entries": len(stats),
                     }

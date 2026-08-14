@@ -308,6 +308,7 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append('<div class="sub">数据最后更新：%s　｜　数据文件：data/disk_io.db　｜　页面每 60 秒自动刷新</div></header>'
                 % html.escape(last_update or "—"))
     page.append('<div class="quickbar"><button onclick="flushNow()">立即记录并刷新</button>'
+                '<button onclick="clearRecords()" style="color:#dc2626;margin-left:4px">清空记录</button>'
                 '<span id="flushMsg"></span></div>')
     page.append('<section class="cards">' + cards_html + "</section>")
 
@@ -476,6 +477,22 @@ function liveToggle() {
     } else {
         liveStart(false);
     }
+}
+
+function clearRecords() {
+    if (!window.confirm('确定要清空所有历史记录吗？此操作不可恢复。')) return;
+    fetch('/api/clear', {method: 'POST'}).then(function (r) { return _j(r); }).then(function (j) {
+        var el = document.getElementById('flushMsg');
+        el.textContent = j.ok ? '已清空全部记录，正在刷新…' : '清空失败：' + (j.error || '');
+        el.style.display = 'inline';
+        el.style.color = j.ok ? '#059669' : '#dc2626';
+        setTimeout(function () { location.reload(); }, 1200);
+    }).catch(function (e) {
+        var el = document.getElementById('flushMsg');
+        el.textContent = '清空失败：' + (e && e.message ? e.message : e);
+        el.style.display = 'inline';
+        el.style.color = '#dc2626';
+    });
 }
 
 function flushNow() {
