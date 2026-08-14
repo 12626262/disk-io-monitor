@@ -100,6 +100,7 @@ filekey_path = {}
 fileobj_path = {}
 stats_lock = threading.Lock()
 stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [读, 写]
+active_ts = {}  # (pid, path) -> last activity time
 counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0,
             "io_missing_size": 0, "io_missing_path": 0}
 
@@ -155,6 +156,7 @@ def on_event(event_tup):
             key = (pid, path)
             with stats_lock:
                 stats[key][0 if event_id == 15 else 1] += size
+                active_ts[key] = time.time()
                 counters["io_ok"] += 1
     except Exception:
         with stats_lock:
@@ -209,14 +211,19 @@ def writer_loop():
         try:
             with stats_lock:
                 snapshot = dict(stats)
+                active = dict(active_ts)
             rows = []
             for (pid, path), (r, w) in snapshot.items():
                 if path.startswith(DATA_DIR):
                     continue
-                pr, pw = prev_snapshot.get((pid, path), (0, 0))
-                rs = max(0, r - pr) / elapsed
-                ws = max(0, w - pw) / elapsed
-                if rs < SPEED_THRESHOLD and ws < SPEED_THRESHOLD:
+                if (pid, path) in prev_snapshot:
+                    pr, pw = prev_snapshot[(pid, path)]
+                    rs = max(0, r - pr) / elapsed
+                    ws = max(0, w - pw) / elapsed
+                else:
+                    rs = 0
+                    ws = 0
+                if rs <= 0 and ws <= 0 and now - active.get((pid, path), 0) >= 3:
                     continue
                 rows.append({
                     "pid": pid,
@@ -227,7 +234,7 @@ def writer_loop():
                     "total": int(rs + ws),
                 })
             rows.sort(key=lambda x: -(x["total"]))
-            rows = rows[:200]
+            rows = rows[:300]
             payload = {"running": True, "ts": int(now), "rows": rows}
             prev_snapshot = snapshot
             prev_ts = now

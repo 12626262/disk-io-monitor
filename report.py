@@ -337,7 +337,7 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append('<div class="livetoolbar">')
     page.append('<button id="liveBtn" onclick="liveToggle()">开始实时监控</button>')
     page.append('<button id="liveAdminBtn" style="display:none" onclick="liveStartAdmin()">以管理员身份启动</button>')
-    page.append('<span id="liveStatus" class="livestatus">点击开始后实时显示各进程对每个文件的读写速度（仅显示读取或写入超过 500 KB/s 的活动），再次点击停止；首次使用需管理员授权。</span>')
+    page.append('<span id="liveStatus" class="livestatus">点击开始后实时显示各进程对每个文件的读写速度，再次点击停止；首次使用需管理员授权。</span>')
     page.append('</div>')
     page.append('<div id="liveWrap" style="display:none">')
     page.append('<table><thead><tr><th>进程</th><th>文件</th><th>读取速度</th><th>写入速度</th><th>合计速度</th></tr></thead>'
@@ -396,7 +396,7 @@ function liveRender(data) {
         var tr = document.createElement('tr');
         var td = document.createElement('td');
         td.colSpan = 5;
-        td.textContent = '当前没有超过 500 KB/s 的读写活动，正在监听…';
+        td.textContent = '暂无读写活动，正在监听…';
         td.style.textAlign = 'center';
         td.style.color = '#94a3b8';
         tr.appendChild(td);
