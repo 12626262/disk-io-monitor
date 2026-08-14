@@ -100,7 +100,7 @@ def to_str(value):
 filekey_path = {}
 fileobj_path = {}
 FILE_PROVIDER_GUID = "{EDD08927-9CC4-4E65-B970-C2560FB5C289}"
-DISK_PROVIDER_GUID = "{802EC45A-1E99-4B83-9925-0830DD829A1F}"
+DISK_PROVIDER_GUID = "{C7BDE69A-E1E0-4177-B6EF-283AD1525271}"
 disk_stats = defaultdict(lambda: [0, 0])  # pid -> [read, write] (physical disk)
 disk_active_ts = {}  # pid -> last activity time
 stats_lock = threading.Lock()
@@ -296,6 +296,8 @@ def writer_loop():
                         "parse_err": counters["parse_err"],
                         "io_missing_size": counters["io_missing_size"],
                         "io_missing_path": counters["io_missing_path"],
+                        "disk_io_ok": counters.get("disk_io_ok", 0),
+                        "disk_missing_size": counters.get("disk_missing_size", 0),
                         "filekey_map": len(filekey_path),
                         "stats_entries": len(stats),
                     }
@@ -432,10 +434,11 @@ def main():
             except Exception:
                 pass
     finally:
-        try:
-            tracer.stop()
-        except Exception:
-            pass
+        stopper = threading.Thread(target=lambda: tracer.stop(), daemon=True)
+        stopper.start()
+        stopper.join(5)
+        if stopper.is_alive():
+            os._exit(0)
         try:
             if os.path.exists(PID_FILE):
                 os.remove(PID_FILE)
