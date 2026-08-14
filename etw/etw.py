@@ -134,7 +134,7 @@ class EventProvider:
         # check if the session name is "NT Kernel Logger"
         self.kernel_trace = False
         self.kernel_trace_was_running = False
-        if session_name.lower() in (et.KERNEL_LOGGER_NAME_LOWER, "diskiofiletrace"):
+        if session_name.lower() == et.KERNEL_LOGGER_NAME_LOWER:
             self.session_name = et.KERNEL_LOGGER_NAME
             self.kernel_trace = True
         else:
@@ -282,7 +282,7 @@ class EventConsumer:
 
         # check if the logger name is "NT Kernel Logger"
         self.kernel_trace = False
-        if logger_name.lower() in (et.KERNEL_LOGGER_NAME_LOWER, "diskiofiletrace"):
+        if logger_name.lower() == et.KERNEL_LOGGER_NAME_LOWER:
             self.kernel_trace = True
 
         if not trace_logfile:

@@ -110,7 +110,7 @@ def on_event(event_tup):
         with stats_lock:
             counters["total"] += 1
             counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
-        if event_id in (12, 13):  # FileIo/Name, FileIo/FileCreate：记录 FileKey -> 路径
+        if event_id in (10, 12):  # NameCreate/Create carry the file path
             fkey = to_int(ev.get("FileKey"))
             fname = normalize_path(to_str(ev.get("FileName")))
             if fkey is not None and fname:
@@ -119,7 +119,7 @@ def on_event(event_tup):
                         filekey_path.clear()
                     filekey_path[fkey] = fname
                     counters["name_ok"] += 1
-        elif event_id in (4, 5):  # FileIo/Read, FileIo/Write
+        elif event_id in (15, 16):  # Read / Write events
             fkey = to_int(ev.get("FileKey"))
             size = to_int(ev.get("SizeOfIo"))
             if fkey is None or size is None:
@@ -130,7 +130,7 @@ def on_event(event_tup):
                 return
             key = (pid, path)
             with stats_lock:
-                stats[key][0 if event_id == 4 else 1] += size
+                stats[key][0 if event_id == 15 else 1] += size
                 counters["io_ok"] += 1
     except Exception:
         with stats_lock:
@@ -227,9 +227,9 @@ def main():
 
     provider = ProviderInfo(
         "Microsoft-Windows-Kernel-File",
-        GUID("{A1E6F2C4-3B8D-4E9A-8C1F-5D7B9A2E4C6F}"),  # custom kernel session GUID
-        et.TRACE_LEVEL_INFORMATION,
-        et.EVENT_TRACE_FLAG_FILE_IO,
+        GUID("{EDD08927-9CC4-4E65-B970-C2560FB5C289}"),  # Kernel-File provider GUID
+        5,  # TRACE_LEVEL_VERBOSE
+        0xFFFFFFFF,  # any keywords: enable all file events
         None,
     )
 
