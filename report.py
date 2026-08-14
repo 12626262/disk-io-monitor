@@ -358,6 +358,7 @@ def build_html(proc, disk, last_update, days_n=14):
 
 JS_TEXT = '''
 var liveTimer = null;
+var liveHbt = null;
 var liveOn = false;
 
 if (location.protocol === 'file:') {
@@ -440,6 +441,9 @@ function liveStart(admin) {
         liveOn = true;
         document.getElementById('liveBtn').textContent = '停止实时监控';
         document.getElementById('liveWrap').style.display = 'block';
+        liveHbt = setInterval(function () {
+            fetch('/api/live/heartbeat', {method: 'POST'}).catch(function () {});
+        }, 2000);
         var meta = document.querySelector('meta[http-equiv="refresh"]');
         if (meta) meta.remove();
         setLiveStatus('正在实时监控…再次点击停止', '#059669');
@@ -447,6 +451,8 @@ function liveStart(admin) {
             fetch('/api/live/data').then(function (r) { return _j(r); }).then(function (d) {
                 if (d.error && d.running === false) {
                     clearInterval(liveTimer);
+                    clearInterval(liveHbt);
+                    liveHbt = null;
                     liveTimer = null;
                     liveOn = false;
                     document.getElementById('liveBtn').textContent = '开始实时监控';
@@ -468,6 +474,8 @@ function liveStartAdmin() {
 function liveToggle() {
     if (liveOn) {
         clearInterval(liveTimer);
+        clearInterval(liveHbt);
+        liveHbt = null;
         liveTimer = null;
         liveOn = false;
         document.getElementById('liveBtn').textContent = '开始实时监控';

@@ -66,6 +66,11 @@ def start_filewatch(admin=False):
         stop_file = os.path.join(DATA_DIR, "live.stop")
         if os.path.exists(stop_file):
             os.remove(stop_file)
+        try:
+            with open(os.path.join(DATA_DIR, "live.heartbeat"), "w", encoding="utf-8") as f:
+                f.write(str(time.time()))
+        except OSError:
+            pass
     except OSError:
         pass
 
@@ -173,6 +178,15 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         if self.path == "/api/live/status":
             send_json(self, {"running": filewatch_running()})
+            return True
+        if self.path == "/api/live/heartbeat":
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(os.path.join(DATA_DIR, "live.heartbeat"), "w", encoding="utf-8") as f:
+                    f.write(str(time.time()))
+                send_json(self, {"ok": True})
+            except Exception as exc:
+                send_json(self, {"ok": False, "error": str(exc)}, 500)
             return True
         if self.path == "/api/flush":
             try:

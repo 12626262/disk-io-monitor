@@ -25,6 +25,7 @@ from paths import DATA_DIR
 PID_FILE = os.path.join(DATA_DIR, "filewatch.pid")
 LIVE_JSON = os.path.join(DATA_DIR, "live.json")
 STOP_FILE = os.path.join(DATA_DIR, "live.stop")
+HEARTBEAT_FILE = os.path.join(DATA_DIR, "live.heartbeat")
 LOG_FILE = os.path.join(DATA_DIR, "filewatch.log")
 
 
@@ -150,9 +151,9 @@ def on_event(event_tup):
                 if path is None and fobj is not None:
                     path = fileobj_path.get(fobj)
             if not path:
+                path = "<unknown file>"
                 with stats_lock:
                     counters["io_missing_path"] += 1
-                return
             key = (pid, path)
             with stats_lock:
                 stats[key][0 if event_id == 15 else 1] += size
@@ -215,6 +216,8 @@ def writer_loop():
             rows = []
             for (pid, path), (r, w) in snapshot.items():
                 if path.startswith(DATA_DIR):
+                    continue
+                if "EtwRTDiskIOMonitorFileTrace" in path:
                     continue
                 if (pid, path) in prev_snapshot:
                     pr, pw = prev_snapshot[(pid, path)]
@@ -281,6 +284,11 @@ def main():
 
     with open(PID_FILE, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
+    try:
+        with open(HEARTBEAT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
 
     build_device_map()
 
@@ -356,6 +364,16 @@ def main():
             time.sleep(1)
             if os.path.exists(STOP_FILE):
                 break
+            try:
+                if os.path.exists(HEARTBEAT_FILE):
+                    if time.time() - os.path.getmtime(HEARTBEAT_FILE) > 10:
+                        dlog("heartbeat expired, stopping")
+                        break
+                else:
+                    dlog("no heartbeat file, stopping")
+                    break
+            except Exception:
+                pass
     finally:
         try:
             tracer.stop()
