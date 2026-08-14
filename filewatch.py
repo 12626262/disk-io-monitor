@@ -271,7 +271,7 @@ def process_name(pid):
     return name
 
 
-SPEED_THRESHOLD = 512000  # 500 KB/s
+DISPLAY_THRESHOLD = 200 * 1024  # only show entries with read or write speed >= 200 KB/s
 
 
 def proc_io_loop():
@@ -338,7 +338,6 @@ def writer_loop():
         try:
             with stats_lock:
                 snapshot = {k: list(v) for k, v in stats.items()}  # deep-copy values so deltas work
-                active = dict(active_ts)
             rows = []
             for (pid, path), (r, w) in snapshot.items():
                 if path.startswith(DATA_DIR):
@@ -352,7 +351,7 @@ def writer_loop():
                 else:
                     rs = 0
                     ws = 0
-                if rs <= 0 and ws <= 0 and now - active.get((pid, path), 0) >= 3:
+                if max(rs, ws) < DISPLAY_THRESHOLD:
                     continue
                 rows.append({
                     "pid": pid,
@@ -369,6 +368,8 @@ def writer_loop():
                 dtot = list(disk_io_total_speed)
             disk_rows = []
             for dp, (rs, ws, pname) in pio.items():
+                if max(rs, ws) < DISPLAY_THRESHOLD:
+                    continue
                 if pname is None:
                     pname = "(PID %d)" % dp
                 disk_rows.append({"pid": dp, "process": pname,
