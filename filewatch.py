@@ -109,6 +109,7 @@ def on_event(event_tup):
     try:
         event_id, ev = event_tup
         pid = ev["EventHeader"]["ProcessId"]
+        ensure_pid_name(pid)
         with stats_lock:
             counters["total"] += 1
             counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
@@ -162,44 +163,74 @@ def on_event(event_tup):
 
 proc_name_cache = {}
 proc_name_ts = {}
+pid_names = {}
+pid_names_ts = {}
+
+
+def ensure_pid_name(pid):
+    # resolve name at event time and cache it, so exited processes still show names
+    now = time.time()
+    if pid in pid_names and now - pid_names_ts.get(pid, 0) < 120:
+        return
+    try:
+        import psutil
+        pid_names[pid] = psutil.Process(pid).name()
+    except Exception:
+        pid_names[pid] = "PID %d" % pid
+    pid_names_ts[pid] = now
 
 
 def process_name(pid):
     now = time.time()
-    if pid in proc_name_cache and now - proc_name_ts.get(pid, 0) < 10:
-        return proc_name_cache[pid]
+    if pid in pid_names and now - pid_names_ts.get(pid, 0) < 120:
+        return pid_names[pid]
     name = "PID %d" % pid
     try:
         import psutil
         name = psutil.Process(pid).name()
     except Exception:
         pass
-    proc_name_cache[pid] = name
-    proc_name_ts[pid] = now
+    pid_names[pid] = name
+    pid_names_ts[pid] = now
     return name
+
+
+SPEED_THRESHOLD = 512000  # 500 KB/s
 
 
 def writer_loop():
     last_dbg = 0
+    prev_snapshot = {}
+    prev_ts = time.time()
     while True:
         time.sleep(1)
+        now = time.time()
+        elapsed = max(0.001, now - prev_ts)
         try:
             with stats_lock:
-                items = [(pid, path, r, w) for (pid, path), (r, w) in stats.items() if r + w > 0]
-                items.sort(key=lambda x: -(x[2] + x[3]))
-                top = items[:500]
+                snapshot = dict(stats)
             rows = []
-            for pid, path, r, w in top:
+            for (pid, path), (r, w) in snapshot.items():
+                if path.startswith(DATA_DIR):
+                    continue
+                pr, pw = prev_snapshot.get((pid, path), (0, 0))
+                rs = max(0, r - pr) / elapsed
+                ws = max(0, w - pw) / elapsed
+                if rs < SPEED_THRESHOLD and ws < SPEED_THRESHOLD:
+                    continue
                 rows.append({
                     "pid": pid,
                     "process": process_name(pid),
                     "file": path,
-                    "read": r,
-                    "write": w,
-                    "total": r + w,
+                    "read": int(rs),
+                    "write": int(ws),
+                    "total": int(rs + ws),
                 })
-            payload = {"running": True, "ts": int(time.time()), "rows": rows}
-            now = time.time()
+            rows.sort(key=lambda x: -(x["total"]))
+            rows = rows[:200]
+            payload = {"running": True, "ts": int(now), "rows": rows}
+            prev_snapshot = snapshot
+            prev_ts = now
             if now - last_dbg >= 5:
                 with stats_lock:
                     dbg = {
