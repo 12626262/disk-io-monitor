@@ -246,6 +246,22 @@ def main():
 
     build_device_map()
 
+    # single-instance guard + clean up stale ETW session from abnormal exit
+    from paths import acquire_mutex
+    if acquire_mutex("Local\\DiskIOMonitorFilewatch") is False:
+        payload = {"running": False, "error": "filewatch is already running (single instance)."}
+        with open(LIVE_JSON, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        sys.exit(0)
+    try:
+        from etw.etw import TraceProperties
+        from etw import evntrace as et
+        et.ControlTraceW(et.TRACEHANDLE(0), "DiskIOMonitorFileTrace",
+                         TraceProperties().get(), et.EVENT_TRACE_CONTROL_STOP)
+        dlog("stopped stale ETW session DiskIOMonitorFileTrace")
+    except Exception:
+        pass
+
     from etw import ETW, ProviderInfo
     from etw.GUID import GUID
     from etw import evntrace as et
