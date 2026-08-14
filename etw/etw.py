@@ -134,7 +134,7 @@ class EventProvider:
         # check if the session name is "NT Kernel Logger"
         self.kernel_trace = False
         self.kernel_trace_was_running = False
-        if session_name.lower() == et.KERNEL_LOGGER_NAME_LOWER:
+        if session_name.lower() in (et.KERNEL_LOGGER_NAME_LOWER, "diskiofiletrace"):
             self.session_name = et.KERNEL_LOGGER_NAME
             self.kernel_trace = True
         else:
@@ -267,6 +267,7 @@ class EventConsumer:
         self.process_thread = None
         self.logger_name = logger_name
         self.end_capture = threading.Event()
+        self._pt_error = None
         self.event_callback = event_callback
         self.vfield_length = None
         self.index = 0
@@ -281,7 +282,7 @@ class EventConsumer:
 
         # check if the logger name is "NT Kernel Logger"
         self.kernel_trace = False
-        if logger_name.lower() == et.KERNEL_LOGGER_NAME_LOWER:
+        if logger_name.lower() in (et.KERNEL_LOGGER_NAME_LOWER, "diskiofiletrace"):
             self.kernel_trace = True
 
         if not trace_logfile:
@@ -295,6 +296,9 @@ class EventConsumer:
         if not self.trace_logfile.EventRecordCallback and \
            self.trace_logfile.ProcessTraceMode & (ec.PROCESS_TRACE_MODE_REAL_TIME | ec.PROCESS_TRACE_MODE_EVENT_RECORD):
             self.trace_logfile.EventRecordCallback = et.EVENT_RECORD_CALLBACK(self._processEvent)
+
+    def _record_pt_error(self, status):
+        self._pt_error = status
 
     def add_pid_whitelist(self, pid):
         self.pid_whitelist.add(pid)
@@ -332,7 +336,7 @@ class EventConsumer:
 
         # For whatever reason, the restype is ignored
         self.trace_handle = et.TRACEHANDLE(self.trace_handle)
-        self.process_thread = threading.Thread(target=self._run, args=(self.trace_handle, self.end_capture))
+        self.process_thread = threading.Thread(target=self._run, args=(self.trace_handle, self.end_capture, self._record_pt_error))
         self.process_thread.daemon = True
         self.process_thread.start()
 
@@ -368,7 +372,7 @@ class EventConsumer:
         return flag
 
     @staticmethod
-    def _run(trace_handle, end_capture):
+    def _run(trace_handle, end_capture, error_cb=None):
         """
         Because ProcessTrace() blocks, this function is used to spin off new threads.
 
@@ -377,7 +381,10 @@ class EventConsumer:
         :return: Does not return a value.
         """
         while True:
-            if tdh.ERROR_SUCCESS != et.ProcessTrace(ct.byref(trace_handle), 1, None, None):
+            status = et.ProcessTrace(ct.byref(trace_handle), 1, None, None)
+            if tdh.ERROR_SUCCESS != status:
+                if error_cb:
+                    error_cb(status)
                 end_capture.set()
 
             if end_capture.isSet():

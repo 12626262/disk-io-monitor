@@ -227,16 +227,17 @@ def main():
 
     provider = ProviderInfo(
         "Microsoft-Windows-Kernel-File",
-        GUID("{EDD08927-9CC4-4E65-B970-C2560FB5C289}"),
+        GUID("{A1E6F2C4-3B8D-4E9A-8C1F-5D7B9A2E4C6F}"),  # custom kernel session GUID
         et.TRACE_LEVEL_INFORMATION,
         et.EVENT_TRACE_FLAG_FILE_IO,
         None,
     )
 
     tracer = ETW(
-        session_name="NT Kernel Logger",
+        session_name="DiskIOMonitorFileTrace",
         providers=[provider],
         event_callback=on_event,
+        ignore_exists_error=False,
     )
 
     dlog("filewatch starting, admin ok, pid=%d" % os.getpid())
@@ -247,6 +248,22 @@ def main():
     try:
         tracer.start()
         dlog("ETW session started")
+        time.sleep(3)
+        try:
+            alive = tracer.consumer.process_thread.is_alive()
+            pt_err = getattr(tracer.consumer, "_pt_error", None)
+            dlog("consumer alive=%s pt_error=%s kernel_was_running=%s"
+                 % (alive, pt_err, tracer.provider.kernel_trace_was_running))
+        except Exception as e:
+            dlog("diag error: %s" % e)
+            alive = True
+            pt_err = None
+        if not alive:
+            payload = {"running": False,
+                       "error": "ETW consumer thread exited (ProcessTrace error %s). Please stop and start again." % pt_err}
+            with open(LIVE_JSON, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            sys.exit(2)
     except Exception as exc:
         dlog("ETW start failed: %s" % exc)
         payload = {"running": False,
