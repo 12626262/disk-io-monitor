@@ -341,6 +341,9 @@ def build_html(proc, disk, last_update, days_n=14):
     page.append('<div id="liveWrap" style="display:none">')
     page.append('<table><thead><tr><th>进程</th><th>文件</th><th>读取速度</th><th>写入速度</th><th>合计速度</th></tr></thead>'
                 '<tbody id="liveRows"></tbody></table>')
+    page.append('<h3 style="margin-top:14px">物理磁盘速度（按进程，与任务管理器口径一致）</h3>')
+    page.append('<table><thead><tr><th>进程</th><th>读取速度</th><th>写入速度</th><th>合计速度</th></tr></thead>'
+                '<tbody id="diskRows"></tbody></table>')
     page.append('</div>')
     page.append('</section>')
     page.append("<footer>")
@@ -428,6 +431,32 @@ function liveRender(data) {
         tr.appendChild(tdT);
         tb.appendChild(tr);
     });
+    var tbD = document.getElementById('diskRows');
+    tbD.innerHTML = '';
+    if (!data.disk_rows || !data.disk_rows.length) {
+        var trD = document.createElement('tr');
+        var tdD = document.createElement('td');
+        tdD.colSpan = 4;
+        tdD.textContent = '暂无磁盘活动…';
+        tdD.style.textAlign = 'center';
+        tdD.style.color = '#94a3b8';
+        trD.appendChild(tdD);
+        tbD.appendChild(trD);
+    } else {
+        data.disk_rows.forEach(function (row) {
+            var tr = document.createElement('tr');
+            var tdP = document.createElement('td');
+            tdP.textContent = row.process + ' (PID ' + row.pid + ')';
+            var tdR = document.createElement('td');
+            tdR.textContent = fmtBytes(row.read) + '/s';
+            var tdW = document.createElement('td');
+            tdW.textContent = fmtBytes(row.write) + '/s';
+            var tdT = document.createElement('td');
+            tdT.textContent = fmtBytes(row.total) + '/s';
+            tr.appendChild(tdP); tr.appendChild(tdR); tr.appendChild(tdW); tr.appendChild(tdT);
+            tbD.appendChild(tr);
+        });
+    }
 }
 
 function liveStart(admin) {

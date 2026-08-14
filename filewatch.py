@@ -99,26 +99,51 @@ def to_str(value):
 
 filekey_path = {}
 fileobj_path = {}
+FILE_PROVIDER_GUID = "{EDD08927-9CC4-4E65-B970-C2560FB5C289}"
+DISK_PROVIDER_GUID = "{802EC45A-1E99-4B83-9925-0830DD829A1F}"
+disk_stats = defaultdict(lambda: [0, 0])  # pid -> [read, write] (physical disk)
+disk_active_ts = {}  # pid -> last activity time
 stats_lock = threading.Lock()
-stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [读, 写]
+stats = defaultdict(lambda: [0, 0])  # (pid, path) -> [read, write]
 active_ts = {}  # (pid, path) -> last activity time
 counters = {"total": 0, "by_opcode": {}, "name_ok": 0, "io_ok": 0, "parse_err": 0,
-            "io_missing_size": 0, "io_missing_path": 0}
+            "io_missing_size": 0, "io_missing_path": 0,
+            "disk_io_ok": 0, "disk_missing_size": 0}
 
 
 def on_event(event_tup):
-    """ETW 事件回调：event_tup = (event_id/opcode, 解析后的字段字典)"""
+    """ETW event callback: (event_id, parsed dict)"""
     try:
         event_id, ev = event_tup
+        prov = str(ev.get("EventHeader", {}).get("ProviderId", "")).upper()
         pid = ev["EventHeader"]["ProcessId"]
         ensure_pid_name(pid)
         with stats_lock:
             counters["total"] += 1
             counters["by_opcode"][str(event_id)] = counters["by_opcode"].get(str(event_id), 0) + 1
-        if counters["by_opcode"].get(str(event_id), 0) == 1 and event_id in (10, 12, 15, 16):
-            dlog("first event id=%s keys=%s values FileKey=%s FileObject=%s SizeOfIo=%s FileName=%s"
-                 % (event_id, sorted(ev.keys()), ev.get("FileKey"), ev.get("FileObject"),
-                    ev.get("SizeOfIo"), ev.get("FileName")))
+        if counters["by_opcode"].get(str(event_id), 0) == 1 and event_id in (10, 11, 12, 15, 16):
+            dlog("first event id=%s provider=%s keys=%s FileKey=%s FileObject=%s SizeOfIo=%s ByteCount=%s FileName=%s"
+                 % (event_id, prov, sorted(ev.keys()), ev.get("FileKey"), ev.get("FileObject"),
+                    ev.get("SizeOfIo"), ev.get("ByteCount"), ev.get("FileName")))
+        if DISK_PROVIDER_GUID.upper() in prov:
+            # physical disk I/O attributed to the issuing process (matches Task Manager)
+            size = to_int(ev.get("ByteCount"))
+            if size is None:
+                size = to_int(ev.get("IoSize"))
+            if size is None:
+                size = to_int(ev.get("IOSize"))
+            if size is None:
+                size = to_int(ev.get("Size"))
+            if size is None:
+                with stats_lock:
+                    counters["disk_missing_size"] += 1
+                return
+            idx = 0 if event_id == 10 else 1
+            with stats_lock:
+                disk_stats[pid][idx] += size
+                disk_active_ts[pid] = time.time()
+                counters["disk_io_ok"] += 1
+            return
         if event_id in (10, 12):  # NameCreate/Create carry the file path
             fkey = to_int(ev.get("FileKey"))
             fobj = to_int(ev.get("FileObject"))
@@ -204,6 +229,7 @@ SPEED_THRESHOLD = 512000  # 500 KB/s
 def writer_loop():
     last_dbg = 0
     prev_snapshot = {}
+    prev_disk_snapshot = {}
     prev_ts = time.time()
     while True:
         time.sleep(1)
@@ -238,8 +264,27 @@ def writer_loop():
                 })
             rows.sort(key=lambda x: -(x["total"]))
             rows = rows[:300]
-            payload = {"running": True, "ts": int(now), "rows": rows}
+            with stats_lock:
+                disk_snap = {k: list(v) for k, v in disk_stats.items()}
+                disk_active = dict(disk_active_ts)
+            disk_rows = []
+            for dp, (dr, dw) in disk_snap.items():
+                if dp in prev_disk_snapshot:
+                    pdr, pdw = prev_disk_snapshot[dp]
+                    rs = max(0, dr - pdr) / elapsed
+                    ws = max(0, dw - pdw) / elapsed
+                else:
+                    rs = 0
+                    ws = 0
+                if rs <= 0 and ws <= 0 and now - disk_active.get(dp, 0) >= 3:
+                    continue
+                disk_rows.append({"pid": dp, "process": process_name(dp),
+                                  "read": int(rs), "write": int(ws), "total": int(rs + ws)})
+            disk_rows.sort(key=lambda x: -(x["total"]))
+            disk_rows = disk_rows[:100]
+            payload = {"running": True, "ts": int(now), "rows": rows, "disk_rows": disk_rows}
             prev_snapshot = snapshot
+            prev_disk_snapshot = disk_snap
             prev_ts = now
             if now - last_dbg >= 5:
                 with stats_lock:
@@ -312,20 +357,30 @@ def main():
     from etw.GUID import GUID
     from etw import evntrace as et
 
-    provider = ProviderInfo(
+    file_provider = ProviderInfo(
         "Microsoft-Windows-Kernel-File",
-        GUID("{EDD08927-9CC4-4E65-B970-C2560FB5C289}"),  # Kernel-File provider GUID
+        GUID(FILE_PROVIDER_GUID),
         5,  # TRACE_LEVEL_VERBOSE
-        0xFFFFFFFF,  # any keywords: enable all file events
+        0xFFFFFFFF,
+        None,
+    )
+    disk_provider = ProviderInfo(
+        "Microsoft-Windows-Kernel-Disk",
+        GUID(DISK_PROVIDER_GUID),
+        5,
+        0xFFFFFFFF,
         None,
     )
 
     tracer = ETW(
         session_name="DiskIOMonitorFileTrace",
-        providers=[provider],
+        providers=[file_provider, disk_provider],
         event_callback=on_event,
         ignore_exists_error=False,
-        event_id_filters=[10, 12, 15, 16],
+        providers_event_id_filters={
+            FILE_PROVIDER_GUID.upper(): [10, 12, 15, 16],
+            DISK_PROVIDER_GUID.upper(): [10, 11],
+        },
         ring_buf_size=32768,
     )
 
